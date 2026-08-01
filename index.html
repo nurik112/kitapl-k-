@@ -863,9 +863,11 @@
     if (doc.getElementsByTagName('parsererror').length){
       // XHTML olarak ayrıştırılamadıysa HTML modunda dene
       const doc2 = new DOMParser().parseFromString(html, 'text/html');
+      sanitizeChapterDom(doc2);
       await inlineImages(doc2, spineItem.href);
       html = doc2.body ? doc2.body.innerHTML : html;
     } else {
+      sanitizeChapterDom(doc);
       await inlineImages(doc, spineItem.href);
       html = doc.documentElement.getElementsByTagName('body')[0]
         ? doc.documentElement.getElementsByTagName('body')[0].innerHTML
@@ -876,6 +878,28 @@
     updateChapterLabel();
     refreshTocHighlight();
     persistProgress();
+  }
+
+  // Taranmış/OCR kökenli epub'larda metin genelde mutlak konumlu (position:absolute)
+  // kutucuklar halinde, orijinal taranmış sayfanın üstüne bindirilecek şekilde
+  // hazırlanır. Bizim sayfalama sistemimiz normal akan metin bekliyor — bu tür
+  // öğeleri normal akışa geri döndürüyoruz, aksi halde metin görünmez bir yere
+  // yapışıp kalıyor ve sayfalar boş görünüyor.
+  function sanitizeChapterDom(doc){
+    const root = doc.body || doc.documentElement;
+    if (!root) return;
+    const all = root.querySelectorAll('[style]');
+    all.forEach(el=>{
+      const style = el.getAttribute('style') || '';
+      if (/position\s*:\s*(absolute|fixed)/i.test(style)){
+        // Konumlandırma ve o konuma özel boyutlandırmayı at, geri kalan
+        // (renk, kalın/italik gibi) biçimlendirmeyi olabildiğince koru.
+        const cleaned = style
+          .replace(/position\s*:[^;]*;?/ig, '')
+          .replace(/(?:^|;)\s*(top|left|right|bottom|width|height)\s*:[^;]*;?/ig, '');
+        if (cleaned.trim()) el.setAttribute('style', cleaned); else el.removeAttribute('style');
+      }
+    });
   }
 
   async function inlineImages(doc, chapterHref){
@@ -941,7 +965,7 @@
       }
       p{ margin:0 0 1em 0; text-align:justify; }
       h1,h2,h3,h4{ font-family:${currentFontFamily()}; line-height:1.25; margin:0.6em 0 0.5em 0; break-after:avoid; }
-      img,svg{ max-width:100%; height:auto; break-inside:avoid; }
+      img,svg{ max-width:100%; max-height:${PAGE_H - 2*TOP}px; height:auto; object-fit:contain; break-inside:avoid; }
       a{ color:inherit; }
       * { -webkit-user-select:text; user-select:text; overflow-wrap:break-word; word-wrap:break-word; }
     </style></head><body>${bodyInnerHtml}</body></html>`;
