@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Kitaplık</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<style>
+  :root{
+    --chrome-bg: rgba(250,250,248,0.92);
+    --chrome-border: rgba(0,0,0,0.08);
+    --chrome-text: #2b2b2b;
+    --chrome-text-dim: #8a8a86;
+    --accent: #2f6f4f;
+    --page-bg: #FBFBF7;
+    --page-text: #2b2b2b;
+  }
+  html[data-theme="sepia"]{
+    --page-bg: #f2e8d5;
+    --page-text: #4a3a22;
+  }
+  html[data-theme="dark"]{
+    --chrome-bg: rgba(20,20,20,0.92);
+    --chrome-border: rgba(255,255,255,0.1);
+    --chrome-text: #e8e6e1;
+    --chrome-text-dim: #8a8a86;
+    --page-bg: #161616;
+    --page-text: #cfcac2;
+  }
+
+  *{box-sizing:border-box;}
+  html,body{
+    margin:0; padding:0; height:100%; width:100%;
+    background: var(--page-bg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+    color: var(--chrome-text);
+    overflow:hidden;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #app{ position:fixed; inset:0; }
+  .screen{ position:absolute; inset:0; display:none; }
+  .screen.active{ display:flex; flex-direction:column; }
+
+  /* ---------- KİTAPLIK EKRANI ---------- */
+  #screen-library{ background: var(--page-bg); }
+  .lib-header{
+    padding: 22px 20px 10px 20px;
+    display:flex; align-items:baseline; justify-content:space-between;
+    flex-shrink:0;
+  }
+  .lib-header h1{
+    font-family: Georgia, "Iowan Old Style", "Palatino Linotype", serif;
+    font-size: 26px; font-weight:600; margin:0; letter-spacing:0.2px;
+  }
+  .lib-add-btn{
+    background: var(--accent); color:#fff; border:none; border-radius:20px;
+    padding:9px 16px; font-size:13.5px; font-weight:600; cursor:pointer;
+    display:flex; align-items:center; gap:6px;
+  }
+  .lib-body{ flex:1; overflow-y:auto; padding: 6px 20px 40px 20px; }
+  .lib-empty{
+    display:flex; flex-direction:column; align-items:center; justify-content:center;
+    height:70%; text-align:center; color: var(--chrome-text-dim); padding: 0 30px;
+  }
+  .lib-empty .icon{ font-size:44px; margin-bottom:14px; opacity:0.6; }
+  .lib-empty p{ font-size:14px; line-height:1.6; max-width:280px; }
+  .lib-dropzone{
+    border:2px dashed transparent; border-radius:16px; transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .lib-dropzone.dragover{ border-color: var(--accent); background: rgba(47,111,79,0.06); }
+
+  .lib-grid{
+    display:grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+    gap: 22px 16px;
+  }
+  .book-card{ cursor:pointer; position:relative; }
+  .book-cover{
+    width:100%; aspect-ratio: 2/3; border-radius:6px; overflow:hidden;
+    box-shadow: 0 3px 10px rgba(0,0,0,0.18), 0 1px 2px rgba(0,0,0,0.1);
+    display:flex; align-items:center; justify-content:center;
+    position:relative; background-size:cover; background-position:center;
+  }
+  .book-cover img{ width:100%; height:100%; object-fit:cover; display:block; }
+  .book-cover .fallback{
+    width:100%; height:100%; display:flex; align-items:center; justify-content:center;
+    padding: 14px; text-align:center;
+    font-family: Georgia, serif; font-weight:700; font-size:13px; line-height:1.3;
+    color: rgba(255,255,255,0.95);
+  }
+  .book-progress-track{
+    position:absolute; left:0; right:0; bottom:0; height:3px; background: rgba(0,0,0,0.15);
+  }
+  .book-progress-fill{ height:100%; background: var(--accent); }
+  .book-title{ margin-top:8px; font-size:12.5px; font-weight:600; line-height:1.3; color:var(--chrome-text); }
+  .book-meta{ font-size:11px; color:var(--chrome-text-dim); margin-top:2px; }
+  .book-remove{
+    position:absolute; top:-6px; right:-6px; width:22px; height:22px; border-radius:50%;
+    background:#3a3a38; color:#fff; border:2px solid var(--page-bg); font-size:13px; line-height:1;
+    display:none; align-items:center; justify-content:center; cursor:pointer;
+  }
+  .book-card:hover .book-remove{ display:flex; }
+
+  #file-input{ display:none; }
+
+  .lib-loading{
+    position:fixed; inset:0; background:rgba(0,0,0,0.4); display:none;
+    align-items:center; justify-content:center; z-index:500; color:#fff; font-size:14px;
+  }
+  .lib-loading.active{ display:flex; }
+  .spinner{
+    width:30px; height:30px; border-radius:50%; border:3px solid rgba(255,255,255,0.3);
+    border-top-color:#fff; animation: spin 0.8s linear infinite; margin-right:12px;
+  }
+  @keyframes spin{ to{ transform:rotate(360deg); } }
+
+  /* ---------- OKUMA EKRANI ---------- */
+  #screen-reader{ background: var(--page-bg); }
+  #reader-viewport{ position:absolute; inset:0; }
+  #page-frame{ position:absolute; inset:0; width:100%; height:100%; border:none; background: var(--page-bg); }
+  .tap-zone{ position:absolute; top:0; bottom:0; z-index:5; }
+  .tap-zone.left{ left:0; width:28%; }
+  .tap-zone.right{ right:0; width:28%; }
+  .tap-zone.middle{ left:28%; right:28%; }
+
+  .bar{
+    position:absolute; left:0; right:0; z-index:20;
+    background: var(--chrome-bg); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    transition: transform 0.22s ease;
+    display:flex; align-items:center;
+  }
+  #top-bar{
+    top:0; height:52px; padding: 0 8px; border-bottom:1px solid var(--chrome-border);
+    transform: translateY(-100%); justify-content:space-between;
+  }
+  #top-bar.show{ transform: translateY(0); }
+  #bottom-bar{
+    bottom:0; padding: 10px 18px 14px 18px; border-top:1px solid var(--chrome-border);
+    transform: translateY(100%); flex-direction:column; align-items:stretch; gap:6px;
+  }
+  #bottom-bar.show{ transform: translateY(0); }
+
+  .icon-btn{
+    background:none; border:none; cursor:pointer; color:var(--chrome-text);
+    width:40px; height:40px; border-radius:20px; font-size:19px;
+    display:flex; align-items:center; justify-content:center; flex-shrink:0;
+  }
+  .icon-btn:active{ background: rgba(0,0,0,0.06); }
+  #top-title{
+    flex:1; text-align:center; font-size:13px; font-weight:600; color:var(--chrome-text);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:0 6px;
+  }
+  .top-right{ display:flex; }
+
+  .progress-row{ display:flex; align-items:center; gap:10px; }
+  #progress-slider{
+    flex:1; -webkit-appearance:none; appearance:none; height:3px; border-radius:2px;
+    background: var(--chrome-border); outline:none;
+  }
+  #progress-slider::-webkit-slider-thumb{
+    -webkit-appearance:none; width:14px; height:14px; border-radius:50%;
+    background: var(--accent); cursor:pointer; margin-top:-5.5px;
+  }
+  .progress-labels{
+    display:flex; justify-content:space-between; font-size:11px; color:var(--chrome-text-dim);
+  }
+
+  /* ---------- İÇİNDEKİLER / AYARLAR PANELİ (drawer) ---------- */
+  .overlay{
+    position:fixed; inset:0; background:rgba(0,0,0,0.35); z-index:29;
+    opacity:0; pointer-events:none; transition:opacity 0.2s ease;
+  }
+  .overlay.show{ opacity:1; pointer-events:auto; }
+
+  .drawer{
+    position:fixed; top:0; bottom:0; width:82%; max-width:340px; z-index:30;
+    background: var(--chrome-bg); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    box-shadow: 0 0 24px rgba(0,0,0,0.25);
+    transition: transform 0.25s ease; overflow-y:auto; color:var(--chrome-text);
+  }
+  #toc-drawer{ left:0; transform: translateX(-105%); padding: 20px 0; }
+  #toc-drawer.show{ transform: translateX(0); }
+  .drawer-title{ font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--chrome-text-dim); padding: 0 20px 12px 20px; }
+  .toc-item{
+    padding: 11px 20px; font-size:14.5px; cursor:pointer; line-height:1.4; border-left:3px solid transparent;
+  }
+  .toc-item:active{ background: rgba(0,0,0,0.05); }
+  .toc-item.current{ border-left-color: var(--accent); font-weight:700; color: var(--accent); }
+
+  #settings-drawer{ right:0; transform: translateX(105%); padding: 20px; }
+  #settings-drawer.show{ transform: translateX(0); }
+  .setting-block{ margin-bottom: 24px; }
+  .setting-label{ font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:var(--chrome-text-dim); margin-bottom:10px; }
+  .theme-row, .font-row{ display:flex; gap:10px; }
+  .choice-btn{
+    flex:1; border:1.5px solid var(--chrome-border); background:transparent; color:var(--chrome-text);
+    border-radius:10px; padding:10px 6px; font-size:13px; cursor:pointer; text-align:center;
+  }
+  .choice-btn.active{ border-color: var(--accent); color: var(--accent); font-weight:700; }
+  .theme-swatch{ width:100%; height:22px; border-radius:5px; margin-bottom:6px; border:1px solid rgba(0,0,0,0.1); }
+  .stepper{ display:flex; align-items:center; justify-content:space-between; border:1.5px solid var(--chrome-border); border-radius:10px; padding: 4px; }
+  .stepper button{ width:38px; height:38px; border:none; background:none; color:var(--chrome-text); font-size:18px; cursor:pointer; border-radius:8px; }
+  .stepper button:active{ background:rgba(0,0,0,0.06); }
+  .stepper .val{ font-size:14px; font-weight:600; }
+
+  .center-msg{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color: var(--page-text); font-size:14px; text-align:center; padding:0 40px; opacity:0.7;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- KİTAPLIK -->
+  <div id="screen-library" class="screen active">
+    <div class="lib-header">
+      <h1>Kitaplığım</h1>
+      <button class="lib-add-btn" id="btn-add-book">＋ Kitap Ekle</button>
+    </div>
+    <div class="lib-body lib-dropzone" id="lib-dropzone">
+      <div id="lib-empty-state" class="lib-empty" style="display:none;">
+        <div class="icon">📖</div>
+        <p>Henüz bir kitap eklemediniz. Bir .epub dosyasını buraya sürükleyin ya da “Kitap Ekle”ye dokunun.</p>
+      </div>
+      <div id="lib-grid" class="lib-grid"></div>
+    </div>
+    <input type="file" id="file-input" accept=".epub,application/epub+zip">
+  </div>
+
+  <!-- OKUMA EKRANI -->
+  <div id="screen-reader" class="screen">
+    <div id="reader-viewport">
+      <iframe id="page-frame" scrolling="no"></iframe>
+      <div class="tap-zone left" id="tap-left"></div>
+      <div class="tap-zone middle" id="tap-middle"></div>
+      <div class="tap-zone right" id="tap-right"></div>
+      <div id="reader-center-msg" class="center-msg" style="display:none;"></div>
+    </div>
+
+    <div id="top-bar" class="bar">
+      <button class="icon-btn" id="btn-back">‹</button>
+      <div id="top-title">—</div>
+      <div class="top-right">
+        <button class="icon-btn" id="btn-toc">☰</button>
+        <button class="icon-btn" id="btn-settings" style="font-size:15px; font-weight:700;">Aa</button>
+      </div>
+    </div>
+
+    <div id="bottom-bar" class="bar">
+      <div class="progress-row">
+        <input type="range" id="progress-slider" min="0" max="1000" value="0">
+      </div>
+      <div class="progress-labels">
+        <span id="progress-chapter-label">—</span>
+        <span id="progress-percent-label">%0</span>
+      </div>
+    </div>
+
+    <!-- İçindekiler -->
+    <div class="drawer" id="toc-drawer">
+      <div class="drawer-title">İçindekiler</div>
+      <div id="toc-list"></div>
+    </div>
+
+    <!-- Görünüm Ayarları -->
+    <div class="drawer" id="settings-drawer">
+      <div class="setting-block">
+        <div class="setting-label">Tema</div>
+        <div class="theme-row">
+          <button class="choice-btn" data-theme="light">
+            <div class="theme-swatch" style="background:#FBFBF7;"></div>Açık
+          </button>
+          <button class="choice-btn" data-theme="sepia">
+            <div class="theme-swatch" style="background:#f2e8d5;"></div>Sepya
+          </button>
+          <button class="choice-btn" data-theme="dark">
+            <div class="theme-swatch" style="background:#161616;"></div>Koyu
+          </button>
+        </div>
+      </div>
+      <div class="setting-block">
+        <div class="setting-label">Yazı Tipi</div>
+        <div class="font-row">
+          <button class="choice-btn" data-font="serif" style="font-family:Georgia,serif;">Serif</button>
+          <button class="choice-btn" data-font="sans" style="font-family:-apple-system,sans-serif;">Sans</button>
+        </div>
+      </div>
+      <div class="setting-block">
+        <div class="setting-label">Yazı Boyutu</div>
+        <div class="stepper">
+          <button id="font-dec">A－</button>
+          <span class="val" id="font-size-val">19px</span>
+          <button id="font-inc">A＋</button>
+        </div>
+      </div>
+      <div class="setting-block">
+        <div class="setting-label">Satır Aralığı</div>
+        <div class="stepper">
+          <button id="line-dec">－</button>
+          <span class="val" id="line-height-val">1.6</span>
+          <button id="line-inc">＋</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="overlay" id="drawer-overlay"></div>
+  </div>
+
+  <div class="lib-loading" id="loading-overlay"><div class="spinner"></div><span id="loading-text">Kitap açılıyor…</span></div>
+</div>
+
+<script>
+(function(){
+  'use strict';
+
+  /* ================= DEPOLAMA (window.storage, yoksa localStorage'a düşer) ================= */
+  const LS_PREFIX = 'epubreader:';
+  async function storeGet(key){
+    try{
+      if (window.storage){
+        const r = await window.storage.get(key, false);
+        return r ? JSON.parse(r.value) : null;
+      }
+    }catch(e){ /* anahtar yoksa hata fırlatabilir, aşağı düş */ }
+    try{
+      const raw = localStorage.getItem(LS_PREFIX+key);
+      return raw ? JSON.parse(raw) : null;
+    }catch(e){ return null; }
+  }
+  async function storeSet(key, value){
+    const json = JSON.stringify(value);
+    try{
+      if (window.storage){ await window.storage.set(key, json, false); return; }
+    }catch(e){}
+    try{ localStorage.setItem(LS_PREFIX+key, json); }catch(e){}
+  }
+  async function storeDelete(key){
+    try{ if (window.storage){ await window.storage.delete(key, false); return; } }catch(e){}
+    try{ localStorage.removeItem(LS_PREFIX+key); }catch(e){}
+  }
+
+  function hashStr(s){
+    let h = 5381;
+    for(let i=0;i<s.length;i++){ h = ((h*33) ^ s.charCodeAt(i)) >>> 0; }
+    return h.toString(36);
+  }
+
+  /* ================= KİTAPLIK DİZİNİ ================= */
+  const LIB_INDEX_KEY = 'library-index';
+  let libraryIndex = []; // [{id,title,author,addedAt,lastOpenedAt,progress,chapterIndex,fraction,coverEmoji,coverColor}]
+
+  async function loadLibraryIndex(){
+    const idx = await storeGet(LIB_INDEX_KEY);
+    libraryIndex = Array.isArray(idx) ? idx : [];
+  }
+  async function saveLibraryIndex(){
+    await storeSet(LIB_INDEX_KEY, libraryIndex);
+  }
+
+  function paletteFor(seed){
+    const palettes = [
+      ['#3b5f6b','#274753'], ['#7a4b3a','#5a3527'], ['#4a5d3a','#33421f'],
+      ['#5a4a7a','#3e3157'], ['#6b4257','#4a2c3c'], ['#3a5a5a','#274040'],
+      ['#7a5a30','#5a3f1f'], ['#3a4a6b','#27324a']
+    ];
+    return palettes[hashStr(seed).charCodeAt(0) % palettes.length];
+  }
+
+  /* ================= EPUB AYRIŞTIRMA ================= */
+  const NS = { c:'urn:oasis:names:tc:opendocument:xmlns:container', opf:'http://www.idpf.org/2007/opf', dc:'http://purl.org/dc/elements/1.1/', ncx:'http://www.daisy.org/z3986/2005/ncx/', xhtml:'http://www.w3.org/1999/xhtml' };
+
+  async function parseEpubFromArrayBuffer(buf){
+    const zip = await JSZip.loadAsync(buf);
+
+    const containerXml = await zip.file('META-INF/container.xml').async('text');
+    const containerDoc = new DOMParser().parseFromString(containerXml, 'application/xml');
+    const rootfilePath = containerDoc.getElementsByTagName('rootfile')[0].getAttribute('full-path');
+    const opfDir = rootfilePath.includes('/') ? rootfilePath.slice(0, rootfilePath.lastIndexOf('/')+1) : '';
+
+    const opfXml = await zip.file(rootfilePath).async('text');
+    const opfDoc = new DOMParser().parseFromString(opfXml, 'application/xml');
+
+    function resolvePath(href){
+      if (!href) return href;
+      const parts = (opfDir + href).split('/');
+      const out = [];
+      for(const p of parts){
+        if (p === '..') out.pop();
+        else if (p === '.' || p === '') { /* skip */ }
+        else out.push(p);
+      }
+      return out.join('/');
+    }
+
+    // Manifest: id -> {href, mediaType}
+    const manifest = {};
+    Array.from(opfDoc.getElementsByTagName('item')).forEach(item=>{
+      manifest[item.getAttribute('id')] = {
+        href: resolvePath(item.getAttribute('href')),
+        mediaType: item.getAttribute('media-type') || '',
+        properties: item.getAttribute('properties') || ''
+      };
+    });
+
+    // Spine sırası
+    const spineIds = Array.from(opfDoc.getElementsByTagName('itemref')).map(it=>it.getAttribute('idref'));
+    const spine = spineIds.map(id=>manifest[id]).filter(Boolean);
+
+    // Metadata
+    function metaText(tag){
+      const els = opfDoc.getElementsByTagNameNS(NS.dc, tag);
+      return els.length ? els[0].textContent.trim() : '';
+    }
+    const title = metaText('title') || 'Adsız Kitap';
+    const author = metaText('creator') || '';
+    let identifier = metaText('identifier');
+    if (!identifier){
+      const idEls = opfDoc.getElementsByTagName('dc:identifier');
+      if (idEls.length) identifier = idEls[0].textContent.trim();
+    }
+
+    // Kapak resmi bul
+    let coverHref = null;
+    const coverItem = Object.values(manifest).find(m => m.properties && m.properties.indexOf('cover-image') !== -1);
+    if (coverItem) coverHref = coverItem.href;
+    if (!coverHref){
+      const metaCover = Array.from(opfDoc.getElementsByTagName('meta')).find(m=>m.getAttribute('name')==='cover');
+      if (metaCover){
+        const cid = metaCover.getAttribute('content');
+        if (manifest[cid]) coverHref = manifest[cid].href;
+      }
+    }
+    let coverBlobUrl = null;
+    if (coverHref && zip.file(coverHref)){
+      try{
+        const blob = await zip.file(coverHref).async('blob');
+        coverBlobUrl = URL.createObjectURL(blob);
+      }catch(e){}
+    }
+
+    // İçindekiler (EPUB3 nav ya da EPUB2 NCX)
+    let toc = [];
+    const navItem = Object.values(manifest).find(m => m.properties && m.properties.indexOf('nav') !== -1);
+    if (navItem && zip.file(navItem.href)){
+      const navHtml = await zip.file(navItem.href).async('text');
+      const navDoc = new DOMParser().parseFromString(navHtml, 'text/html');
+      const navEl = Array.from(navDoc.querySelectorAll('nav')).find(n => (n.getAttribute('epub:type')||n.getAttribute('type')||'').indexOf('toc') !== -1) || navDoc.querySelector('nav');
+      if (navEl){
+        const navDir = navItem.href.includes('/') ? navItem.href.slice(0, navItem.href.lastIndexOf('/')+1) : '';
+        Array.from(navEl.querySelectorAll('a[href]')).forEach(a=>{
+          const href = a.getAttribute('href');
+          const full = resolvePath(navDir.replace(opfDir,'') + href).replace(/^\/+/, '');
+          toc.push({ title: a.textContent.trim() || '(başlıksız)', href: resolvePath(href.startsWith(navDir)? href : (navDir+href).replace(opfDir,'')) });
+        });
+      }
+    }
+    if (toc.length === 0){
+      const ncxItem = Object.values(manifest).find(m => m.mediaType === 'application/x-dtbncx+xml');
+      if (ncxItem && zip.file(ncxItem.href)){
+        const ncxXml = await zip.file(ncxItem.href).async('text');
+        const ncxDoc = new DOMParser().parseFromString(ncxXml, 'application/xml');
+        Array.from(ncxDoc.getElementsByTagName('navPoint')).forEach(np=>{
+          const labelEl = np.getElementsByTagName('text')[0];
+          const contentEl = np.getElementsByTagName('content')[0];
+          if (labelEl && contentEl){
+            toc.push({ title: labelEl.textContent.trim(), href: resolvePath(contentEl.getAttribute('src')) });
+          }
+        });
+      }
+    }
+    // href'lerin fragment kısmını (#...) at, spine eşlemesi dosya bazında
+    toc = toc.map(t => ({ title: t.title, href: t.href.split('#')[0] }));
+
+    return { zip, title, author, identifier, spine, toc, coverBlobUrl, opfDir };
+  }
+
+  /* ================= OKUYUCU DURUMU ================= */
+  const state = {
+    book: null,          // parseEpubFromArrayBuffer sonucu
+    bookId: null,
+    chapterIndex: 0,
+    pageIndex: 0,
+    totalPagesInChapter: 1,
+    fraction: 0,          // bölüm içindeki kaba ilerleme (0..1) - kalıcı kayıt için
+    settings: { theme: 'light', font: 'serif', fontSize: 19, lineHeight: 1.6 },
+    chromeVisible: false,
+    resourceCache: new Map() // zip yolu -> blob url (mevcut bölüm için)
+  };
+
+  const SETTINGS_KEY = 'reader-settings';
+  async function loadSettings(){
+    const s = await storeGet(SETTINGS_KEY);
+    if (s) state.settings = Object.assign(state.settings, s);
+    applyTheme();
+  }
+  async function saveSettings(){ await storeSet(SETTINGS_KEY, state.settings); }
+
+  function applyTheme(){
+    document.documentElement.setAttribute('data-theme', state.settings.theme);
+    document.querySelectorAll('.choice-btn[data-theme]').forEach(b=>{
+      b.classList.toggle('active', b.getAttribute('data-theme') === state.settings.theme);
+    });
+    document.querySelectorAll('.choice-btn[data-font]').forEach(b=>{
+      b.classList.toggle('active', b.getAttribute('data-font') === state.settings.font);
+    });
+    document.getElementById('font-size-val').textContent = state.settings.fontSize + 'px';
+    document.getElementById('line-height-val').textContent = state.settings.lineHeight.toFixed(1);
+  }
+
+  /* ================= EKRAN GEÇİŞLERİ ================= */
+  function showScreen(id){
+    document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+  }
+
+  /* ================= KİTAPLIK RENDER ================= */
+  function renderLibrary(){
+    const grid = document.getElementById('lib-grid');
+    const empty = document.getElementById('lib-empty-state');
+    grid.innerHTML = '';
+    const sorted = libraryIndex.slice().sort((a,b)=> (b.lastOpenedAt||b.addedAt) - (a.lastOpenedAt||a.addedAt));
+    empty.style.display = sorted.length ? 'none' : 'flex';
+
+    sorted.forEach(entry=>{
+      const card = document.createElement('div');
+      card.className = 'book-card';
+
+      const cover = document.createElement('div');
+      cover.className = 'book-cover';
+      const colors = paletteFor(entry.id);
+      cover.style.background = `linear-gradient(160deg, ${colors[0]}, ${colors[1]})`;
+      if (entry.coverBlobUrl){
+        const img = document.createElement('img');
+        img.src = entry.coverBlobUrl;
+        cover.appendChild(img);
+      } else {
+        const fb = document.createElement('div');
+        fb.className = 'fallback';
+        fb.textContent = entry.title;
+        cover.appendChild(fb);
+      }
+      const track = document.createElement('div'); track.className = 'book-progress-track';
+      const fill = document.createElement('div'); fill.className = 'book-progress-fill';
+      fill.style.width = Math.round((entry.progress||0)*100) + '%';
+      track.appendChild(fill);
+      cover.appendChild(track);
+
+      const removeBtn = document.createElement('div');
+      removeBtn.className = 'book-remove';
+      removeBtn.textContent = '✕';
+      removeBtn.onclick = async (e)=>{
+        e.stopPropagation();
+        if (!confirm(`"${entry.title}" kitaplıktan kaldırılsın mı?`)) return;
+        libraryIndex = libraryIndex.filter(b=>b.id!==entry.id);
+        await saveLibraryIndex();
+        renderLibrary();
+      };
+
+      card.appendChild(cover);
+      card.appendChild(removeBtn);
+
+      const t = document.createElement('div'); t.className='book-title'; t.textContent = entry.title;
+      const m = document.createElement('div'); m.className='book-meta';
+      m.textContent = entry.progress ? `%${Math.round(entry.progress*100)} tamamlandı` : 'Henüz başlanmadı';
+
+      card.appendChild(t);
+      card.appendChild(m);
+
+      card.onclick = ()=> openLibraryEntry(entry);
+      grid.appendChild(card);
+    });
+  }
+
+  function openLibraryEntry(entry){
+    pendingResumeEntry = entry;
+    document.getElementById('file-input').click();
+  }
+
+  let pendingResumeEntry = null;
+
+  /* ================= DOSYA YÜKLEME ================= */
+  const fileInput = document.getElementById('file-input');
+  document.getElementById('btn-add-book').onclick = ()=>{ pendingResumeEntry = null; fileInput.click(); };
+  fileInput.addEventListener('change', async ()=>{
+    const f = fileInput.files[0];
+    fileInput.value = '';
+    if (f) await handleEpubFile(f);
+  });
+
+  const dropzone = document.getElementById('lib-dropzone');
+  ['dragenter','dragover'].forEach(ev=> dropzone.addEventListener(ev, e=>{ e.preventDefault(); dropzone.classList.add('dragover'); }));
+  ['dragleave','drop'].forEach(ev=> dropzone.addEventListener(ev, e=>{ e.preventDefault(); dropzone.classList.remove('dragover'); }));
+  dropzone.addEventListener('drop', async e=>{
+    const f = e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) { pendingResumeEntry = null; await handleEpubFile(f); }
+  });
+
+  function setLoading(active, text){
+    document.getElementById('loading-overlay').classList.toggle('active', !!active);
+    if (text) document.getElementById('loading-text').textContent = text;
+  }
+
+  async function handleEpubFile(file){
+    setLoading(true, 'Kitap açılıyor…');
+    try{
+      const buf = await file.arrayBuffer();
+      const book = await parseEpubFromArrayBuffer(buf);
+      const bookId = hashStr((book.identifier || '') + '::' + book.title + '::' + (book.author||'') + '::' + file.size);
+
+      if (pendingResumeEntry && pendingResumeEntry.id !== bookId){
+        setLoading(false);
+        const cont = confirm('Bu dosya, kitaplıktaki kayıtla eşleşmiyor. Yine de yeni bir kitap olarak açılsın mı?');
+        if (!cont) { pendingResumeEntry = null; return; }
+      }
+
+      let entry = libraryIndex.find(b=>b.id===bookId);
+      if (!entry){
+        entry = { id: bookId, title: book.title, author: book.author, addedAt: Date.now(), lastOpenedAt: Date.now(), progress: 0, chapterIndex: 0, fraction: 0 };
+        libraryIndex.push(entry);
+      } else {
+        entry.lastOpenedAt = Date.now();
+      }
+      entry.coverBlobUrl = book.coverBlobUrl || entry.coverBlobUrl || null;
+      await saveLibraryIndex();
+
+      state.book = book;
+      state.bookId = bookId;
+      state.chapterIndex = entry.chapterIndex || 0;
+      state.fraction = entry.fraction || 0;
+      pendingResumeEntry = null;
+
+      openReader();
+    }catch(err){
+      console.error(err);
+      alert('Kitap açılamadı. Dosyanın geçerli bir .epub olduğundan emin olun.\n\nHata: ' + err.message);
+    }finally{
+      setLoading(false);
+    }
+  }
+
+  /* ================= OKUYUCU AÇMA ================= */
+  function openReader(){
+    showScreen('screen-reader');
+    document.getElementById('top-title').textContent = state.book.title;
+    buildToc();
+    renderChapter(state.chapterIndex, { restoreFraction: state.fraction });
+  }
+
+  document.getElementById('btn-back').onclick = async ()=>{
+    await persistProgress();
+    URL.revokeObjectURL && null;
+    for (const url of state.resourceCache.values()) { try{ URL.revokeObjectURL(url); }catch(e){} }
+    state.resourceCache.clear();
+    state.book = null;
+    showScreen('screen-library');
+    renderLibrary();
+  };
+
+  function buildToc(){
+    const list = document.getElementById('toc-list');
+    list.innerHTML = '';
+    const spineHrefs = state.book.spine.map(s=>s.href);
+    const items = state.book.toc.length ? state.book.toc : state.book.spine.map((s,i)=>({title:'Bölüm '+(i+1), href:s.href}));
+    items.forEach(item=>{
+      const idx = spineHrefs.indexOf(item.href);
+      const el = document.createElement('div');
+      el.className = 'toc-item';
+      el.textContent = item.title;
+      el.dataset.chapterIndex = idx >= 0 ? idx : -1;
+      el.onclick = ()=>{
+        closeDrawers();
+        if (idx >= 0) renderChapter(idx, { restoreFraction: 0 });
+      };
+      list.appendChild(el);
+    });
+  }
+  function refreshTocHighlight(){
+    document.querySelectorAll('.toc-item').forEach(el=>{
+      el.classList.toggle('current', parseInt(el.dataset.chapterIndex,10) === state.chapterIndex);
+    });
+  }
+
+  /* ================= BÖLÜM RENDER + SAYFALAMA ================= */
+  async function resolveResourceUrl(href){
+    if (state.resourceCache.has(href)) return state.resourceCache.get(href);
+    const zipFile = state.book.zip.file(href);
+    if (!zipFile) return '';
+    const blob = await zipFile.async('blob');
+    const url = URL.createObjectURL(blob);
+    state.resourceCache.set(href, url);
+    return url;
+  }
+
+  async function renderChapter(index, opts){
+    opts = opts || {};
+    if (index < 0 || index >= state.book.spine.length) return;
+
+    for (const url of state.resourceCache.values()) { try{ URL.revokeObjectURL(url); }catch(e){} }
+    state.resourceCache.clear();
+
+    state.chapterIndex = index;
+    const spineItem = state.book.spine[index];
+    let html = await state.book.zip.file(spineItem.href).async('text');
+
+    const doc = new DOMParser().parseFromString(html, 'application/xhtml+xml');
+    if (doc.getElementsByTagName('parsererror').length){
+      // XHTML olarak ayrıştırılamadıysa HTML modunda dene
+      const doc2 = new DOMParser().parseFromString(html, 'text/html');
+      await inlineImages(doc2, spineItem.href);
+      html = doc2.body ? doc2.body.innerHTML : html;
+    } else {
+      await inlineImages(doc, spineItem.href);
+      html = doc.documentElement.getElementsByTagName('body')[0]
+        ? doc.documentElement.getElementsByTagName('body')[0].innerHTML
+        : new XMLSerializer().serializeToString(doc);
+    }
+
+    await paintFrame(html, opts.restoreFraction || 0);
+    updateChapterLabel();
+    refreshTocHighlight();
+    persistProgress();
+  }
+
+  async function inlineImages(doc, chapterHref){
+    const chapterDir = chapterHref.includes('/') ? chapterHref.slice(0, chapterHref.lastIndexOf('/')+1) : '';
+    function resolve(href){
+      const parts = (chapterDir + href).split('/');
+      const out = [];
+      for(const p of parts){ if (p==='..') out.pop(); else if (p==='.'||p==='') {} else out.push(p); }
+      return out.join('/');
+    }
+    const imgs = Array.from(doc.getElementsByTagName('img'));
+    for (const img of imgs){
+      const src = img.getAttribute('src');
+      if (!src || src.startsWith('http') || src.startsWith('data:')) continue;
+      const url = await resolveResourceUrl(resolve(src));
+      if (url) img.setAttribute('src', url);
+    }
+    const images = Array.from(doc.getElementsByTagNameNS ? doc.getElementsByTagNameNS('*','image') : []);
+    for (const im of images){
+      const href = im.getAttribute('xlink:href') || im.getAttribute('href');
+      if (!href || href.startsWith('http') || href.startsWith('data:')) continue;
+      const url = await resolveResourceUrl(resolve(href));
+      if (url) im.setAttribute('xlink:href', url);
+    }
+  }
+
+  function currentFontFamily(){
+    return state.settings.font === 'serif'
+      ? `Georgia, "Iowan Old Style", "Palatino Linotype", "Times New Roman", serif`
+      : `-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif`;
+  }
+  function themeColors(){
+    if (state.settings.theme === 'sepia') return { bg:'#f2e8d5', text:'#4a3a22' };
+    if (state.settings.theme === 'dark') return { bg:'#161616', text:'#cfcac2' };
+    return { bg:'#FBFBF7', text:'#2b2b2b' };
+  }
+
+  let currentBodyHtml = '';
+  async function paintFrame(bodyInnerHtml, restoreFraction){
+    currentBodyHtml = bodyInnerHtml;
+    const frame = document.getElementById('page-frame');
+    const viewport = document.getElementById('reader-viewport');
+    const rect = viewport.getBoundingClientRect();
+    const PAGE_W = Math.round(rect.width);
+    const PAGE_H = Math.round(rect.height);
+    const SIDE = Math.max(18, Math.round(PAGE_W * 0.055));
+    const TOP = Math.max(28, Math.round(PAGE_H * 0.05));
+    const colors = themeColors();
+
+    const srcdoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+      html,body{ margin:0; padding:0; height:100%; overflow:hidden; background:${colors.bg}; }
+      body{
+        box-sizing:border-box;
+        column-width:${PAGE_W - 2*SIDE}px;
+        column-gap:${2*SIDE}px;
+        height:${PAGE_H - 2*TOP}px;
+        padding:${TOP}px ${SIDE}px;
+        -webkit-column-fill:auto; column-fill:auto;
+        font-family:${currentFontFamily()};
+        font-size:${state.settings.fontSize}px;
+        line-height:${state.settings.lineHeight};
+        color:${colors.text};
+      }
+      p{ margin:0 0 1em 0; text-align:justify; }
+      h1,h2,h3,h4{ font-family:${currentFontFamily()}; line-height:1.25; margin:0.6em 0 0.5em 0; break-after:avoid; }
+      img,svg{ max-width:100%; height:auto; break-inside:avoid; }
+      a{ color:inherit; }
+      * { -webkit-user-select:text; user-select:text; }
+    </style></head><body>${bodyInnerHtml}</body></html>`;
+
+    await new Promise(resolve=>{
+      frame.onload = resolve;
+      frame.srcdoc = srcdoc;
+    });
+
+    const fdoc = frame.contentDocument;
+    const scrollWidth = fdoc.body.scrollWidth;
+    const step = PAGE_W;
+    state.totalPagesInChapter = Math.max(1, Math.ceil(scrollWidth / step));
+    let targetPage = Math.round(restoreFraction * (state.totalPagesInChapter-1));
+    goToPage(targetPage, true);
+  }
+
+  function goToPage(pageIdx, skipPersist){
+    const frame = document.getElementById('page-frame');
+    const fdoc = frame.contentDocument;
+    if (!fdoc) return;
+    pageIdx = Math.max(0, Math.min(state.totalPagesInChapter-1, pageIdx));
+    state.pageIndex = pageIdx;
+    const rect = document.getElementById('reader-viewport').getBoundingClientRect();
+    const PAGE_W = Math.round(rect.width);
+    fdoc.body.style.transform = `translateX(-${pageIdx*PAGE_W}px)`;
+    fdoc.body.style.transition = 'none';
+    state.fraction = state.totalPagesInChapter > 1 ? pageIdx/(state.totalPagesInChapter-1) : 0;
+    updateProgressUI();
+    if (!skipPersist) persistProgress();
+  }
+
+  async function nextPage(){
+    if (state.pageIndex < state.totalPagesInChapter-1){ goToPage(state.pageIndex+1); }
+    else if (state.chapterIndex < state.book.spine.length-1){ await renderChapter(state.chapterIndex+1, {restoreFraction:0}); }
+  }
+  async function prevPage(){
+    if (state.pageIndex > 0){ goToPage(state.pageIndex-1); }
+    else if (state.chapterIndex > 0){
+      await renderChapter(state.chapterIndex-1, {restoreFraction:1});
+    }
+  }
+
+  /* ================= İLERLEME KALICI KAYIT ================= */
+  async function persistProgress(){
+    if (!state.bookId) return;
+    const entry = libraryIndex.find(b=>b.id===state.bookId);
+    if (!entry) return;
+    entry.chapterIndex = state.chapterIndex;
+    entry.fraction = state.fraction;
+    const totalChapters = state.book.spine.length;
+    entry.progress = totalChapters > 0 ? Math.min(1, (state.chapterIndex + state.fraction) / totalChapters) : 0;
+    entry.lastOpenedAt = Date.now();
+    await saveLibraryIndex();
+  }
+
+  function updateChapterLabel(){
+    const items = state.book.toc.length ? state.book.toc : null;
+    let label = 'Bölüm ' + (state.chapterIndex+1);
+    if (items){
+      const spineHrefs = state.book.spine.map(s=>s.href);
+      const match = items.slice().reverse().find(it=>{
+        const idx = spineHrefs.indexOf(it.href);
+        return idx >=0 && idx <= state.chapterIndex;
+      });
+      if (match) label = match.title;
+    }
+    document.getElementById('progress-chapter-label').textContent = label;
+  }
+
+  function updateProgressUI(){
+    const totalChapters = state.book.spine.length;
+    const overall = totalChapters > 0 ? (state.chapterIndex + state.fraction) / totalChapters : 0;
+    document.getElementById('progress-slider').value = Math.round(overall*1000);
+    document.getElementById('progress-percent-label').textContent = '%' + Math.round(overall*100);
+  }
+
+  document.getElementById('progress-slider').addEventListener('input', (e)=>{
+    const overall = parseInt(e.target.value,10)/1000;
+    const totalChapters = state.book.spine.length;
+    const target = overall * totalChapters;
+    const chapterIdx = Math.min(totalChapters-1, Math.floor(target));
+    const frac = target - chapterIdx;
+    if (chapterIdx === state.chapterIndex){
+      const p = Math.round(frac*(state.totalPagesInChapter-1));
+      goToPage(p);
+    } else {
+      renderChapter(chapterIdx, { restoreFraction: frac });
+    }
+  });
+
+  /* ================= DOKUNMA / TIKLAMA BÖLGELERİ ================= */
+  document.getElementById('tap-left').onclick = ()=> prevPage();
+  document.getElementById('tap-right').onclick = ()=> nextPage();
+  document.getElementById('tap-middle').onclick = ()=> toggleChrome();
+
+  function toggleChrome(forceState){
+    state.chromeVisible = typeof forceState === 'boolean' ? forceState : !state.chromeVisible;
+    document.getElementById('top-bar').classList.toggle('show', state.chromeVisible);
+    document.getElementById('bottom-bar').classList.toggle('show', state.chromeVisible);
+    if (!state.chromeVisible) closeDrawers();
+  }
+
+  document.addEventListener('keydown', (e)=>{
+    if (!document.getElementById('screen-reader').classList.contains('active')) return;
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { nextPage(); e.preventDefault(); }
+    else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { prevPage(); e.preventDefault(); }
+    else if (e.key === 'Escape') { closeDrawers(); toggleChrome(false); }
+  });
+
+  // Kaydırma (swipe) desteği
+  let touchStartX = null, touchStartY = null;
+  const viewportEl = document.getElementById('reader-viewport');
+  viewportEl.addEventListener('touchstart', (e)=>{
+    if (e.touches.length !== 1) return;
+    touchStartX = e.touches[0].clientX; touchStartY = e.touches[0].clientY;
+  }, {passive:true});
+  viewportEl.addEventListener('touchend', (e)=>{
+    if (touchStartX === null) return;
+    const dx = (e.changedTouches[0].clientX - touchStartX);
+    const dy = (e.changedTouches[0].clientY - touchStartY);
+    if (Math.abs(dx) > 55 && Math.abs(dx) > Math.abs(dy)*1.5){
+      if (dx < 0) nextPage(); else prevPage();
+    }
+    touchStartX = null; touchStartY = null;
+  }, {passive:true});
+
+  /* ================= ÇEKMECELER (TOC / AYARLAR) ================= */
+  const overlay = document.getElementById('drawer-overlay');
+  function closeDrawers(){
+    document.getElementById('toc-drawer').classList.remove('show');
+    document.getElementById('settings-drawer').classList.remove('show');
+    overlay.classList.remove('show');
+  }
+  document.getElementById('btn-toc').onclick = ()=>{
+    toggleChrome(true);
+    document.getElementById('settings-drawer').classList.remove('show');
+    document.getElementById('toc-drawer').classList.add('show');
+    overlay.classList.add('show');
+  };
+  document.getElementById('btn-settings').onclick = ()=>{
+    toggleChrome(true);
+    document.getElementById('toc-drawer').classList.remove('show');
+    document.getElementById('settings-drawer').classList.add('show');
+    overlay.classList.add('show');
+  };
+  overlay.onclick = closeDrawers;
+
+  document.querySelectorAll('.choice-btn[data-theme]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      state.settings.theme = btn.getAttribute('data-theme');
+      applyTheme();
+      await saveSettings();
+      if (state.book) await paintFrame(currentBodyHtml, state.fraction);
+    };
+  });
+  document.querySelectorAll('.choice-btn[data-font]').forEach(btn=>{
+    btn.onclick = async ()=>{
+      state.settings.font = btn.getAttribute('data-font');
+      applyTheme();
+      await saveSettings();
+      if (state.book) await paintFrame(currentBodyHtml, state.fraction);
+    };
+  });
+  document.getElementById('font-inc').onclick = async ()=>{
+    state.settings.fontSize = Math.min(32, state.settings.fontSize+1);
+    applyTheme(); await saveSettings();
+    if (state.book) await paintFrame(currentBodyHtml, state.fraction);
+  };
+  document.getElementById('font-dec').onclick = async ()=>{
+    state.settings.fontSize = Math.max(13, state.settings.fontSize-1);
+    applyTheme(); await saveSettings();
+    if (state.book) await paintFrame(currentBodyHtml, state.fraction);
+  };
+  document.getElementById('line-inc').onclick = async ()=>{
+    state.settings.lineHeight = Math.min(2.2, +(state.settings.lineHeight+0.1).toFixed(1));
+    applyTheme(); await saveSettings();
+    if (state.book) await paintFrame(currentBodyHtml, state.fraction);
+  };
+  document.getElementById('line-dec').onclick = async ()=>{
+    state.settings.lineHeight = Math.max(1.2, +(state.settings.lineHeight-0.1).toFixed(1));
+    applyTheme(); await saveSettings();
+    if (state.book) await paintFrame(currentBodyHtml, state.fraction);
+  };
+
+  let resizeTimer = null;
+  window.addEventListener('resize', ()=>{
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(()=>{ if (state.book) paintFrame(currentBodyHtml, state.fraction); }, 200);
+  });
+
+  /* ================= BAŞLANGIÇ ================= */
+  (async function init(){
+    await loadLibraryIndex();
+    await loadSettings();
+    renderLibrary();
+  })();
+
+})();
+</script>
+</body>
+</html>
