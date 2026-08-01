@@ -235,7 +235,10 @@
   <div id="screen-library" class="screen active">
     <div class="lib-header">
       <h1>Kitaplığım</h1>
-      <button class="lib-add-btn" id="btn-add-book">＋ Kitap Ekle</button>
+      <div style="display:flex; gap:8px;">
+        <button class="lib-add-btn" id="btn-add-url" style="background:transparent; color:var(--accent); border:1.5px solid var(--accent);">🔗 URL</button>
+        <button class="lib-add-btn" id="btn-add-book">＋ Kitap Ekle</button>
+      </div>
     </div>
     <div class="lib-body lib-dropzone" id="lib-dropzone">
       <div id="lib-empty-state" class="lib-empty" style="display:none;">
@@ -379,6 +382,60 @@
     let h = 5381;
     for(let i=0;i<s.length;i++){ h = ((h*33) ^ s.charCodeAt(i)) >>> 0; }
     return h.toString(36);
+  }
+
+  /* ================= KİTAP DOSYASINI CİHAZDA SAKLAMA ================= */
+  // Gerçek .epub içeriğini (ikili veri) base64'e çevirip parçalar halinde
+  // window.storage'a yazıyoruz. Böylece kitap bir kez yüklendiğinde bir daha
+  // hiçbir yere (GitHub dahil) ihtiyaç kalmadan bu cihazda/tarayıcıda saklanır.
+  const BLOB_CHUNK_CHARS = 3500000; // ~3.4MB metin/parça, 5MB anahtar sınırının altında
+  const MAX_STORE_BYTES = 30 * 1024 * 1024; // bu boyuttan büyük dosyalar otomatik saklanmaz
+
+  function arrayBufferToBase64(buf){
+    let binary = '';
+    const bytes = new Uint8Array(buf);
+    const chunkSize = 0x8000;
+    for (let i=0; i<bytes.length; i+=chunkSize){
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunkSize));
+    }
+    return btoa(binary);
+  }
+  function base64ToArrayBuffer(b64){
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i=0; i<binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    return bytes.buffer;
+  }
+
+  async function persistBookBlob(id, buf){
+    const b64 = arrayBufferToBase64(buf);
+    const chunkCount = Math.ceil(b64.length / BLOB_CHUNK_CHARS);
+    for (let i=0; i<chunkCount; i++){
+      const part = b64.slice(i*BLOB_CHUNK_CHARS, (i+1)*BLOB_CHUNK_CHARS);
+      await storeSet(`book-blob:${id}:${i}`, part);
+    }
+    await storeSet(`book-blob:${id}:meta`, { chunks: chunkCount, size: buf.byteLength });
+  }
+
+  async function loadBookBlob(id){
+    const meta = await storeGet(`book-blob:${id}:meta`);
+    if (!meta || !meta.chunks) return null;
+    let b64 = '';
+    for (let i=0; i<meta.chunks; i++){
+      const part = await storeGet(`book-blob:${id}:${i}`);
+      if (part === null || part === undefined) return null;
+      b64 += part;
+    }
+    return base64ToArrayBuffer(b64);
+  }
+
+  async function deleteBookBlob(id){
+    try{
+      const meta = await storeGet(`book-blob:${id}:meta`);
+      const n = meta ? meta.chunks : 0;
+      for (let i=0; i<n; i++){ await storeDelete(`book-blob:${id}:${i}`); }
+      await storeDelete(`book-blob:${id}:meta`);
+    }catch(e){}
   }
 
   /* ================= KİTAPLIK DİZİNİ ================= */
@@ -589,6 +646,7 @@
         if (!confirm(`"${entry.title}" kitaplıktan kaldırılsın mı?`)) return;
         libraryIndex = libraryIndex.filter(b=>b.id!==entry.id);
         await saveLibraryIndex();
+        if (entry.hasStoredBlob) deleteBookBlob(entry.id);
         renderLibrary();
       };
 
@@ -597,7 +655,11 @@
 
       const t = document.createElement('div'); t.className='book-title'; t.textContent = entry.title;
       const m = document.createElement('div'); m.className='book-meta';
-      m.textContent = entry.progress ? `%${Math.round(entry.progress*100)} tamamlandı` : 'Henüz başlanmadı';
+      const progressText = entry.progress ? `%${Math.round(entry.progress*100)} tamamlandı` : 'Henüz başlanmadı';
+      let sourceTag = '';
+      if (entry.hasStoredBlob) sourceTag = ' · 📱 cihazda kayıtlı';
+      else if (entry.sourceUrl) sourceTag = ' · 🔗 otomatik açılır';
+      m.textContent = progressText + sourceTag;
 
       card.appendChild(t);
       card.appendChild(m);
@@ -607,28 +669,72 @@
     });
   }
 
-  function openLibraryEntry(entry){
+  async function openLibraryEntry(entry){
+    if (entry.hasStoredBlob){
+      setLoading(true, 'Kitap yükleniyor…');
+      try{
+        const buf = await loadBookBlob(entry.id);
+        if (buf){
+          pendingResumeEntry = entry;
+          await handleEpubBuffer(buf, { skipPersist: true });
+          return;
+        }
+      }catch(err){ console.error(err); }
+      setLoading(false);
+      // Cihazda saklı veri bulunamadıysa aşağıdaki yollara düş
+    }
+    if (entry.sourceUrl){
+      pendingResumeEntry = entry;
+      setLoading(true, 'Kitap indiriliyor…');
+      try{
+        const res = await fetch(entry.sourceUrl);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const buf = await res.arrayBuffer();
+        await handleEpubBuffer(buf, { sourceUrl: entry.sourceUrl });
+      }catch(err){
+        setLoading(false);
+        alert('Kitap otomatik indirilemedi (bağlantı artık erişilemez olabilir).\n\nHata: ' + err.message + '\n\nDosyayı elle seçmeyi deneyebilirsiniz.');
+        document.getElementById('file-input').click();
+      }
+      return;
+    }
     pendingResumeEntry = entry;
     document.getElementById('file-input').click();
   }
 
   let pendingResumeEntry = null;
 
-  /* ================= DOSYA YÜKLEME ================= */
+  /* ================= DOSYA YÜKLEME (yerel dosya veya URL) ================= */
   const fileInput = document.getElementById('file-input');
   document.getElementById('btn-add-book').onclick = ()=>{ pendingResumeEntry = null; fileInput.click(); };
   fileInput.addEventListener('change', async ()=>{
     const f = fileInput.files[0];
     fileInput.value = '';
-    if (f) await handleEpubFile(f);
+    if (f){ const buf = await f.arrayBuffer(); await handleEpubBuffer(buf, {}); }
   });
+
+  document.getElementById('btn-add-url').onclick = async ()=>{
+    const url = prompt('EPUB dosyasının doğrudan bağlantısını yapıştırın.\n\nGitHub\'daysa "raw.githubusercontent.com" bağlantısını kullanın (dosyaya gidip "Raw" düğmesine basarak alabilirsiniz):', '');
+    if (!url) return;
+    pendingResumeEntry = null;
+    setLoading(true, 'Kitap indiriliyor…');
+    try{
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const buf = await res.arrayBuffer();
+      await handleEpubBuffer(buf, { sourceUrl: url });
+    }catch(err){
+      setLoading(false);
+      alert('Kitap indirilemedi.\n\nHata: ' + err.message);
+    }
+  };
 
   const dropzone = document.getElementById('lib-dropzone');
   ['dragenter','dragover'].forEach(ev=> dropzone.addEventListener(ev, e=>{ e.preventDefault(); dropzone.classList.add('dragover'); }));
   ['dragleave','drop'].forEach(ev=> dropzone.addEventListener(ev, e=>{ e.preventDefault(); dropzone.classList.remove('dragover'); }));
   dropzone.addEventListener('drop', async e=>{
     const f = e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) { pendingResumeEntry = null; await handleEpubFile(f); }
+    if (f) { pendingResumeEntry = null; const buf = await f.arrayBuffer(); await handleEpubBuffer(buf, {}); }
   });
 
   function setLoading(active, text){
@@ -636,12 +742,12 @@
     if (text) document.getElementById('loading-text').textContent = text;
   }
 
-  async function handleEpubFile(file){
+  async function handleEpubBuffer(buf, opts){
+    opts = opts || {};
     setLoading(true, 'Kitap açılıyor…');
     try{
-      const buf = await file.arrayBuffer();
       const book = await parseEpubFromArrayBuffer(buf);
-      const bookId = hashStr((book.identifier || '') + '::' + book.title + '::' + (book.author||'') + '::' + file.size);
+      const bookId = hashStr((book.identifier || '') + '::' + book.title + '::' + (book.author||'') + '::' + buf.byteLength);
 
       if (pendingResumeEntry && pendingResumeEntry.id !== bookId){
         setLoading(false);
@@ -657,6 +763,7 @@
         entry.lastOpenedAt = Date.now();
       }
       entry.coverBlobUrl = book.coverBlobUrl || entry.coverBlobUrl || null;
+      if (opts.sourceUrl) entry.sourceUrl = opts.sourceUrl;
       await saveLibraryIndex();
 
       state.book = book;
@@ -666,6 +773,20 @@
       pendingResumeEntry = null;
 
       openReader();
+
+      // Yerel olarak yüklenen (URL'den olmayan, henüz saklanmamış) kitapları
+      // arka planda cihazda saklıyoruz — bir daha dosya seçmeye gerek kalmasın.
+      if (!opts.sourceUrl && !opts.skipPersist){
+        if (buf.byteLength <= MAX_STORE_BYTES){
+          persistBookBlob(bookId, buf).then(async ()=>{
+            entry.hasStoredBlob = true;
+            await saveLibraryIndex();
+          }).catch(err=> console.warn('Kitap cihazda saklanamadı:', err));
+        } else {
+          entry.hasStoredBlob = false;
+          console.warn('Kitap dosyası çok büyük olduğu için cihazda saklanmadı (>' + Math.round(MAX_STORE_BYTES/1024/1024) + 'MB).');
+        }
+      }
     }catch(err){
       console.error(err);
       alert('Kitap açılamadı. Dosyanın geçerli bir .epub olduğundan emin olun.\n\nHata: ' + err.message);
@@ -822,7 +943,7 @@
       h1,h2,h3,h4{ font-family:${currentFontFamily()}; line-height:1.25; margin:0.6em 0 0.5em 0; break-after:avoid; }
       img,svg{ max-width:100%; height:auto; break-inside:avoid; }
       a{ color:inherit; }
-      * { -webkit-user-select:text; user-select:text; }
+      * { -webkit-user-select:text; user-select:text; overflow-wrap:break-word; word-wrap:break-word; }
     </style></head><body>${bodyInnerHtml}</body></html>`;
 
     await new Promise(resolve=>{
@@ -831,6 +952,14 @@
     });
 
     const fdoc = frame.contentDocument;
+
+    // Yazı tipleri yüklenip yerleşim tam oturana kadar bekle — aksi halde
+    // ölçüm erken yapılırsa sayfa sayısı yanlış hesaplanıp bazı sayfalar
+    // boş/eksik görünebiliyor.
+    try{ if (fdoc.fonts && fdoc.fonts.ready) await fdoc.fonts.ready; }catch(e){}
+    await new Promise(r=> requestAnimationFrame(()=> requestAnimationFrame(r)));
+    void fdoc.body.offsetHeight; // reflow'u zorla
+
     const scrollWidth = fdoc.body.scrollWidth;
     const step = PAGE_W;
     state.totalPagesInChapter = Math.max(1, Math.ceil(scrollWidth / step));
@@ -1013,6 +1142,12 @@
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(()=>{ if (state.book) paintFrame(currentBodyHtml, state.fraction); }, 200);
   });
+  if (window.visualViewport){
+    window.visualViewport.addEventListener('resize', ()=>{
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(()=>{ if (state.book) paintFrame(currentBodyHtml, state.fraction); }, 200);
+    });
+  }
 
   /* ================= AI ÇEVİRİ / BAĞLAM AÇIKLAMA (gömülü) ================= */
   // Not: harici Tampermonkey script'leri, kitap sayfalarının render edildiği
@@ -1187,6 +1322,22 @@
     await loadSettings();
     await loadApiKey();
     renderLibrary();
+
+    const params = new URLSearchParams(location.search);
+    const bookUrl = params.get('book');
+    if (bookUrl){
+      setLoading(true, 'Kitap indiriliyor…');
+      try{
+        const res = await fetch(bookUrl);
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const buf = await res.arrayBuffer();
+        pendingResumeEntry = null;
+        await handleEpubBuffer(buf, { sourceUrl: bookUrl });
+      }catch(err){
+        setLoading(false);
+        alert('Bağlantıdaki kitap otomatik açılamadı.\n\nHata: ' + err.message);
+      }
+    }
   })();
 
 })();
