@@ -117,7 +117,7 @@
   #screen-reader{ background: var(--page-bg); }
   #reader-viewport{ position:absolute; inset:0; }
   #page-frame{ position:absolute; inset:0; width:100%; height:100%; border:none; background: var(--page-bg); }
-  .tap-zone{ position:absolute; top:0; bottom:0; z-index:5; }
+  .tap-zone{ position:absolute; top:0; bottom:0; z-index:5; pointer-events:none; }
   .tap-zone.left{ left:0; width:28%; }
   .tap-zone.right{ right:0; width:28%; }
   .tap-zone.middle{ left:28%; right:28%; }
@@ -206,6 +206,26 @@
     position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
     color: var(--page-text); font-size:14px; text-align:center; padding:0 40px; opacity:0.7;
   }
+
+  /* ---------- AI ÇEVİRİ / BAĞLAM AÇIKLAMA ---------- */
+  #ai-translate-btn{
+    position:fixed; bottom:20px; right:16px; z-index:25;
+    width:42px; height:42px; border-radius:50%; border:none; padding:0;
+    display:flex; align-items:center; justify-content:center;
+    background:#1a202c; color:#fff; font-size:18px; line-height:1;
+    box-shadow:0 3px 10px rgba(0,0,0,0.35); cursor:pointer;
+    -webkit-tap-highlight-color:transparent; user-select:none; -webkit-user-select:none;
+    touch-action:none; opacity:0.35; transform:scale(0.9);
+    transition:opacity 0.15s ease, transform 0.15s ease;
+  }
+  #ai-panel{
+    position:fixed; left:10px; right:10px; bottom:72px; max-height:50vh; overflow-y:auto;
+    background:#ffffff; border:2px solid #3182ce; border-radius:12px;
+    box-shadow:0 10px 30px rgba(0,0,0,0.3); padding:16px;
+    font-family:-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size:14px; line-height:1.6; z-index:26; color:#2d3748; display:none;
+  }
+  #ai-panel.show{ display:block; }
 </style>
 </head>
 <body>
@@ -301,9 +321,25 @@
           <button id="line-inc">＋</button>
         </div>
       </div>
+      <div class="setting-block">
+        <div class="setting-label">🤖 AI Çeviri — Groq API Anahtarı</div>
+        <input type="password" id="api-key-input" placeholder="gsk_..." autocomplete="off"
+          style="width:100%; padding:10px 12px; border-radius:8px; border:1.5px solid var(--chrome-border); background:transparent; color:var(--chrome-text); font-size:13px; margin-bottom:8px;">
+        <div style="display:flex; gap:8px;">
+          <button id="api-key-save" class="choice-btn" style="flex:1;">Kaydet</button>
+          <button id="api-key-show" class="choice-btn" style="flex:0 0 auto; padding-left:14px; padding-right:14px;">Göster</button>
+        </div>
+        <div style="font-size:11px; color:var(--chrome-text-dim); margin-top:8px; line-height:1.5;">
+          Anahtar yalnızca bu cihazda/tarayıcıda saklanır, koda veya bir sunucuya gönderilmez.
+          console.groq.com/keys adresinden ücretsiz alabilirsiniz.
+        </div>
+      </div>
     </div>
 
     <div class="overlay" id="drawer-overlay"></div>
+
+    <button id="ai-translate-btn" title="Çevir / Bağlamı Açıkla">🤖</button>
+    <div id="ai-panel"></div>
   </div>
 
   <div class="lib-loading" id="loading-overlay"><div class="spinner"></div><span id="loading-text">Kitap açılıyor…</span></div>
@@ -800,6 +836,8 @@
     state.totalPagesInChapter = Math.max(1, Math.ceil(scrollWidth / step));
     let targetPage = Math.round(restoreFraction * (state.totalPagesInChapter-1));
     goToPage(targetPage, true);
+
+    attachSelectionTracking(fdoc);
   }
 
   function goToPage(pageIdx, skipPersist){
@@ -976,10 +1014,178 @@
     resizeTimer = setTimeout(()=>{ if (state.book) paintFrame(currentBodyHtml, state.fraction); }, 200);
   });
 
+  /* ================= AI ÇEVİRİ / BAĞLAM AÇIKLAMA (gömülü) ================= */
+  // Not: harici Tampermonkey script'leri, kitap sayfalarının render edildiği
+  // srcdoc iframe'ine erişemiyor (tarayıcı kısıtı). Bu yüzden aynı özelliği
+  // doğrudan okuyucunun kendi koduna gömüyoruz — iframe sınırı sorun olmuyor
+  // çünkü buradaki kod zaten frame.contentDocument'a erişebiliyor.
+  const GROQ_KEY_STORAGE = 'groq-api-key';
+  let GROQ_API_KEY = "";
+  let aiLastCaptured = { text: "", context: "" };
+
+  async function loadApiKey(){
+    const k = await storeGet(GROQ_KEY_STORAGE);
+    GROQ_API_KEY = (k && typeof k === 'string') ? k : "";
+    const input = document.getElementById('api-key-input');
+    if (input) input.value = GROQ_API_KEY;
+  }
+
+  document.getElementById('api-key-save').onclick = async ()=>{
+    const val = document.getElementById('api-key-input').value.trim();
+    GROQ_API_KEY = val;
+    await storeSet(GROQ_KEY_STORAGE, val);
+    const saveBtn = document.getElementById('api-key-save');
+    const original = saveBtn.textContent;
+    saveBtn.textContent = 'Kaydedildi ✓';
+    setTimeout(()=>{ saveBtn.textContent = original; }, 1500);
+  };
+  document.getElementById('api-key-show').onclick = ()=>{
+    const input = document.getElementById('api-key-input');
+    const btn = document.getElementById('api-key-show');
+    if (input.type === 'password'){ input.type = 'text'; btn.textContent = 'Gizle'; }
+    else { input.type = 'password'; btn.textContent = 'Göster'; }
+  };
+
+  function aiGetContextFromNode(fdoc, node){
+    if (!node) return "";
+    try{
+      const el = node.nodeType === 3 ? node.parentElement : node;
+      const block = el && el.closest ? el.closest('p, div, section, article, li, blockquote, td') : null;
+      if (block) return (block.innerText || block.textContent || '').replace(/\s+/g,' ').trim();
+    }catch(e){}
+    return "";
+  }
+
+  function aiUpdateSelection(fdoc){
+    try{
+      const sel = fdoc.getSelection ? fdoc.getSelection() : fdoc.defaultView.getSelection();
+      const text = sel.toString().trim();
+      const btn = document.getElementById('ai-translate-btn');
+      if (text){
+        aiLastCaptured = { text: text, context: aiGetContextFromNode(fdoc, sel.anchorNode) };
+        if (btn){ btn.style.opacity = '1'; btn.style.transform = 'scale(1)'; }
+      } else {
+        if (btn){ btn.style.opacity = '0.35'; btn.style.transform = 'scale(0.9)'; }
+      }
+    }catch(e){}
+  }
+
+  function attachSelectionTracking(fdoc){
+    fdoc.addEventListener('selectionchange', ()=> aiUpdateSelection(fdoc));
+    fdoc.addEventListener('mouseup', ()=> setTimeout(()=>aiUpdateSelection(fdoc), 50));
+    fdoc.addEventListener('touchend', ()=> setTimeout(()=>aiUpdateSelection(fdoc), 50));
+    // Yeni bölüm/sayfa render edildiğinde eski seçim geçersiz olur
+    aiLastCaptured = { text: "", context: "" };
+    const btn = document.getElementById('ai-translate-btn');
+    if (btn){ btn.style.opacity = '0.35'; btn.style.transform = 'scale(0.9)'; }
+
+    // Sayfa çevirme / orta alana dokunma / paneli kapatma — iframe'in kendi içinde
+    // (tap-zone kaplamaları artık pointer-events:none, metin seçimini engellemiyor)
+    fdoc.addEventListener('click', (e)=>{
+      const sel = fdoc.getSelection ? fdoc.getSelection() : fdoc.defaultView.getSelection();
+      if (sel && sel.toString().trim()) return; // aktif bir seçim varken sayfa çevirme/panel kapatma yapma
+
+      const panel = aiGetOrCreatePanel();
+      if (panel.classList.contains('show')){ panel.classList.remove('show'); return; }
+
+      const w = fdoc.documentElement.clientWidth || fdoc.body.clientWidth;
+      const x = e.clientX;
+      if (x < w*0.28) prevPage();
+      else if (x > w*0.72) nextPage();
+      else toggleChrome();
+    });
+  }
+
+  function aiWordCount(t){ return t.trim().split(/\s+/).filter(Boolean).length; }
+
+  function aiGetOrCreatePanel(){
+    return document.getElementById('ai-panel');
+  }
+
+  function aiFetchExplanation(captureData){
+    const panel = aiGetOrCreatePanel();
+    panel.classList.add('show');
+    const isPhrase = aiWordCount(captureData.text) > 1;
+
+    panel.innerHTML = `
+      <div style="font-weight:bold; color:#3182ce; margin-bottom:6px;">🤖 ${isPhrase ? 'Çeviri' : 'Açıklama'} Hazırlanıyor…</div>
+      <div style="font-size:12px; font-weight:bold; color:#4a5568; background:#edf2f7; padding:6px 8px; border-radius:4px;">
+        Seçilen: "${captureData.text}"
+      </div>
+    `;
+
+    const systemPrompt = isPhrase
+      ? `Sen uzman bir çevirmensin. Kullanıcının seçtiği kelime grubunu veya cümleyi doğal, akıcı bir Türkçeye çevir. Önce kısa çeviriyi ver, ardından varsa deyimsel/özel bir kullanım olup olmadığını 1-2 cümleyle belirt. Bağlamı dikkate al. Gereksiz uzatma.`
+      : `Sen uzman bir dil öğrenme asistanısın. Kullanıcının seçtiği kelimeyi Türkçe açıkla. Sağlanan cümle bağlamını dikkatle incele; kelimenin sadece sözlük anlamını değil, o cümlede hangi anlamda ve nasıl kullanıldığını açıkla.`;
+
+    const userPrompt = `Seçilen: "${captureData.text}"\nBağlam: "${captureData.context || 'Bağlam tespit edilemedi.'}"`;
+
+    fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${GROQ_API_KEY}`
+      },
+      body: JSON.stringify({
+        model: "llama-3.3-70b-versatile",
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt }
+        ],
+        temperature: 0.3
+      })
+    }).then(async (res)=>{
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      const explanation = data.choices[0].message.content;
+      panel.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #e2e8f0; padding-bottom:8px; margin-bottom:12px;">
+          <b style="color:#2b6cb0; font-size:15px;">🤖 ${isPhrase ? 'Çeviri' : 'Bağlamsal Açıklama'}</b>
+          <button id="ai-panel-close" style="border:none; background:#edf2f7; border-radius:4px; cursor:pointer; font-weight:bold; padding:6px 10px; color:#4a5568;">✕</button>
+        </div>
+        <div style="font-size:12px; font-weight:600; color:#4a5568; background:#edf2f7; padding:6px 8px; border-radius:4px; margin-bottom:12px;">
+          Seçim: ${captureData.text}
+        </div>
+        <div style="white-space:pre-wrap; font-size:13px; color:#2d3748;">${explanation}</div>
+      `;
+      document.getElementById('ai-panel-close').onclick = ()=> panel.classList.remove('show');
+    }).catch((err)=>{
+      panel.innerHTML = `<b style="color:#e53e3e;">Hata:</b> İstek başarısız oldu (${err.message}). API anahtarını ve bağlantıyı kontrol edin.`;
+    });
+  }
+
+  document.getElementById('ai-translate-btn').addEventListener('click', ()=>{
+    if (!GROQ_API_KEY){
+      alert('Önce bir Groq API anahtarı girmeniz gerekiyor.\n\n"Aa" (Görünüm Ayarları) panelini açıp anahtarınızı yapıştırın ve kaydedin. Ücretsiz anahtar: console.groq.com/keys');
+      document.getElementById('toc-drawer').classList.remove('show');
+      document.getElementById('settings-drawer').classList.add('show');
+      document.getElementById('drawer-overlay').classList.add('show');
+      toggleChrome(true);
+      return;
+    }
+    if (aiLastCaptured.text){
+      aiFetchExplanation(aiLastCaptured);
+    } else {
+      const manual = prompt("Metin yakalanamadı. Çevrilecek/açıklanacak metni buraya yazın:", "");
+      if (manual && manual.trim()) aiFetchExplanation({ text: manual.trim(), context: "" });
+    }
+  });
+
+  // Panelin dışına dokununca kapansın, panelin veya butonun içine dokununca kapanmasın
+  document.addEventListener('click', (e)=>{
+    const panel = aiGetOrCreatePanel();
+    if (!panel.classList.contains('show')) return;
+    const btn = document.getElementById('ai-translate-btn');
+    if (panel.contains(e.target)) return;
+    if (btn && btn.contains(e.target)) return;
+    panel.classList.remove('show');
+  }, true);
+
   /* ================= BAŞLANGIÇ ================= */
   (async function init(){
     await loadLibraryIndex();
     await loadSettings();
+    await loadApiKey();
     renderLibrary();
   })();
 
